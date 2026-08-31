@@ -1,0 +1,231 @@
+name: Sync generated Stash templates
+run-name: Sync from Custom_OpenClash_Rules @ ${{ github.event.client_payload.source_sha || inputs.source_sha }}
+
+on:
+  repository_dispatch:
+    types:
+      - sync-generated-stash
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full Custom_OpenClash_Rules main commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  statuses: write
+
+concurrency:
+  group: main-writers
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      source_sha: ${{ steps.request.outputs.source_sha }}
+      target_sha: ${{ steps.publish.outputs.target_sha }}
+    steps:
+      - name: Resolve requested source revision
+        id: request
+        env:
+          DISPATCH_SHA: ${{ github.event.client_payload.source_sha }}
+          MANUAL_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${DISPATCH_SHA:-$MANUAL_SHA}"
+          if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "A full lowercase source commit SHA is required." >&2
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout target repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Checkout source repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Aethersailor/Custom_OpenClash_Rules
+          ref: ${{ steps.request.outputs.source_sha }}
+          path: .source
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Generate, commit, and push templates
+        id: publish
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_source_sha="$(git -C .source rev-parse HEAD)"
+          if [ "$actual_source_sha" != "$SOURCE_SHA" ]; then
+            echo "Checked out source revision does not match the request." >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          render() {
+            python .source/py/generate_stash_configs.py \
+              --target stash \
+              --output-dir cfg
+            python .source/py/generate_stash_configs.py \
+              --check \
+              --target stash \
+              --output-dir cfg
+            printf '%s\n' "$SOURCE_SHA" > SOURCE_REVISION
+          }
+
+          remote_main_sha() {
+            git ls-remote --exit-code origin refs/heads/main |
+              awk 'NR == 1 { print $1 }'
+          }
+
+          target_sha=""
+          for attempt in 1 2 3; do
+            echo "Target publication attempt ${attempt}/3"
+            git fetch --no-tags origin main
+            git reset --hard origin/main
+            render
+
+            unexpected_changes="$(
+              git status --short --untracked-files=all -- . \
+                ':(exclude,glob)cfg/Custom_Stash*.ini' \
+                ':(exclude)SOURCE_REVISION'
+            )"
+            if [ -n "$unexpected_changes" ]; then
+              echo "Generator modified files outside the target allowlist:" >&2
+              printf '%s\n' "$unexpected_changes" >&2
+              exit 1
+            fi
+
+            base_sha="$(git rev-parse HEAD)"
+            git add -A -- ':(glob)cfg/Custom_Stash*.ini' SOURCE_REVISION
+            if git diff --cached --quiet; then
+              remote_sha="$(remote_main_sha)"
+              if [ "$remote_sha" = "$base_sha" ]; then
+                target_sha="$base_sha"
+                break
+              fi
+              continue
+            fi
+
+            git commit \
+              -m "chore(cfg): sync generated Stash templates" \
+              -m "Generated-From: Aethersailor/Custom_OpenClash_Rules@$SOURCE_SHA"
+            candidate_sha="$(git rev-parse HEAD)"
+            if git push origin HEAD:main; then
+              remote_sha="$(remote_main_sha)"
+              if [ "$remote_sha" = "$candidate_sha" ]; then
+                target_sha="$candidate_sha"
+                break
+              fi
+            fi
+          done
+
+          if [ -z "$target_sha" ]; then
+            echo "Could not publish generated templates after 3 attempts." >&2
+            exit 1
+          fi
+          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout generated revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.sync.outputs.target_sha }}
+
+      - name: Checkout source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Aethersailor/Custom_OpenClash_Rules
+          ref: ${{ needs.sync.outputs.source_sha }}
+          path: .source
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Verify source identity and generated bytes
+        env:
+          SOURCE_SHA: ${{ needs.sync.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < SOURCE_REVISION)" = "$SOURCE_SHA"
+          python .source/py/generate_stash_configs.py \
+            --check \
+            --target stash \
+            --output-dir cfg
+          test "$(find cfg -maxdepth 1 -type f -name 'Custom_Stash*.ini' | wc -l)" -eq 9
+
+      - name: Verify Raw and jsDelivr publication
+        env:
+          TARGET_SHA: ${{ needs.sync.outputs.target_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+
+          fetch_match() {
+            local source_file="$1"
+            local url="$2"
+            local output_file="$3"
+            for attempt in $(seq 1 18); do
+              if curl --fail --silent --show-error --location \
+                --connect-timeout 10 --max-time 30 \
+                "$url" -o "$output_file" && cmp -s "$source_file" "$output_file"; then
+                return 0
+              fi
+              sleep 10
+            done
+            echo "Published bytes did not converge: $url" >&2
+            return 1
+          }
+
+          for source_file in cfg/Custom_Stash*.ini; do
+            name="$(basename "$source_file")"
+            raw_fixed="https://raw.githubusercontent.com/Aethersailor/Custom_Stash_Rules/$TARGET_SHA/cfg/$name"
+            cdn_fixed="https://cdn.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@$TARGET_SHA/cfg/$name"
+            cdn_main="https://cdn.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@main/cfg/$name"
+            purge_main="https://purge.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@main/cfg/$name"
+
+            fetch_match "$source_file" "$raw_fixed" "$temp_dir/raw-$name"
+            fetch_match "$source_file" "$cdn_fixed" "$temp_dir/fixed-$name"
+            curl --fail --silent --show-error --location \
+              --connect-timeout 10 --max-time 30 "$purge_main" >/dev/null || true
+            fetch_match "$source_file" "$cdn_main" "$temp_dir/main-$name"
+          done
+
+      - name: Record exact generated commit status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.sync.outputs.target_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
+            -f state=success \
+            -f context=generated-sync/verify \
+            -f description='Generated templates and public bytes verified' \
+            -f target_url="$RUN_URL"

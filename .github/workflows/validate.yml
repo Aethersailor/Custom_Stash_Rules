@@ -1,0 +1,68 @@
+name: Validate generated templates
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read source revision
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f SOURCE_REVISION ]; then
+            if find cfg -maxdepth 1 -type f -name 'Custom_Stash*.ini' | grep -q .; then
+              echo "Generated templates exist without SOURCE_REVISION." >&2
+              exit 1
+            fi
+            echo "Bootstrap commit has no generated templates yet."
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          source_sha="$(tr -d '\r\n' < SOURCE_REVISION)"
+          if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "SOURCE_REVISION must contain one full Git commit SHA." >&2
+            exit 1
+          fi
+          echo "generated=true" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source repository
+        if: steps.source.outputs.generated == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Aethersailor/Custom_OpenClash_Rules
+          ref: ${{ steps.source.outputs.source_sha }}
+          path: .source
+
+      - name: Set up Python
+        if: steps.source.outputs.generated == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Verify generated templates
+        if: steps.source.outputs.generated == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .source/py/generate_stash_configs.py \
+            --check \
+            --target stash \
+            --output-dir cfg
+          test "$(find cfg -maxdepth 1 -type f -name 'Custom_Stash*.ini' | wc -l)" -eq 9
+          git diff --check
