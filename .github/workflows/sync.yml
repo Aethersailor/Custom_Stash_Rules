@@ -144,7 +144,7 @@ jobs:
   verify:
     needs: sync
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout generated revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -176,7 +176,7 @@ jobs:
             --output-dir cfg
           test "$(find cfg -maxdepth 1 -type f -name 'Custom_Stash*.ini' | wc -l)" -eq 9
 
-      - name: Verify Raw and jsDelivr publication
+      - name: Verify immutable Raw and jsDelivr publication
         env:
           TARGET_SHA: ${{ needs.sync.outputs.target_sha }}
         shell: bash
@@ -205,15 +205,119 @@ jobs:
             name="$(basename "$source_file")"
             raw_fixed="https://raw.githubusercontent.com/Aethersailor/Custom_Stash_Rules/$TARGET_SHA/cfg/$name"
             cdn_fixed="https://cdn.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@$TARGET_SHA/cfg/$name"
-            cdn_main="https://cdn.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@main/cfg/$name"
-            purge_main="https://purge.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@main/cfg/$name"
 
             fetch_match "$source_file" "$raw_fixed" "$temp_dir/raw-$name"
             fetch_match "$source_file" "$cdn_fixed" "$temp_dir/fixed-$name"
-            curl --fail --silent --show-error --location \
-              --connect-timeout 10 --max-time 30 "$purge_main" >/dev/null || true
-            fetch_match "$source_file" "$cdn_main" "$temp_dir/main-$name"
           done
+
+      - name: Purge and verify jsDelivr main aliases
+        env:
+          TARGET_SHA: ${{ needs.sync.outputs.target_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          source_files=(cfg/Custom_Stash*.ini)
+
+          purge_target() {
+            local name="$1"
+            local purge_url="https://purge.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@main/cfg/$name"
+            local response_file="$temp_dir/purge-$name.json"
+            local retry_delays=(2 5 10 20)
+            for attempt in $(seq 1 5); do
+              if curl --fail --silent --show-error --location \
+                --retry 3 --retry-all-errors --retry-delay 2 \
+                --connect-timeout 10 --max-time 30 \
+                --user-agent 'Custom_Stash_Rules-jsDelivr-publisher/1.0' \
+                "$purge_url" -o "$response_file" && \
+                jq -e '.status == "finished"' "$response_file" >/dev/null; then
+                echo "Purged $name"
+                return 0
+              fi
+              if [ "$attempt" -lt 5 ]; then
+                sleep "${retry_delays[$((attempt - 1))]}"
+              fi
+            done
+            echo "Purge did not finish for $purge_url" >&2
+            if [ -s "$response_file" ]; then
+              jq -c '{status, error}' "$response_file" >&2 || true
+            fi
+            return 1
+          }
+
+          # Purge every mutable path before requesting any @main file. This avoids
+          # repopulating one path through an older cached branch resolution while
+          # the remaining paths are still being invalidated.
+          for source_file in "${source_files[@]}"; do
+            purge_target "$(basename "$source_file")"
+          done
+
+          stale_names=()
+          for round in $(seq 1 30); do
+            pids=()
+            names=()
+            for source_file in "${source_files[@]}"; do
+              name="$(basename "$source_file")"
+              names+=("$name")
+              curl --fail --silent --show-error --location \
+                --retry 2 --retry-all-errors --retry-delay 2 \
+                --connect-timeout 10 --max-time 30 \
+                --user-agent 'Custom_Stash_Rules-jsDelivr-publisher/1.0' \
+                "https://cdn.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@main/cfg/$name" \
+                -o "$temp_dir/main-$name" &
+              pids+=("$!")
+            done
+
+            download_status=()
+            for index in "${!pids[@]}"; do
+              if wait "${pids[$index]}"; then
+                download_status+=(0)
+              else
+                download_status+=(1)
+              fi
+            done
+
+            stale_names=()
+            for index in "${!source_files[@]}"; do
+              source_file="${source_files[$index]}"
+              name="${names[$index]}"
+              if [ "${download_status[$index]}" -ne 0 ] || \
+                ! cmp -s "$source_file" "$temp_dir/main-$name"; then
+                stale_names+=("$name")
+              fi
+            done
+
+            if [ "${#stale_names[@]}" -eq 0 ]; then
+              echo "All jsDelivr @main templates match target $TARGET_SHA"
+              exit 0
+            fi
+
+            printf 'Round %s/30: waiting for %s\n' \
+              "$round" "${stale_names[*]}"
+            if [ "$round" -lt 30 ]; then
+              if [ "$round" -le 6 ]; then
+                delay=10
+              elif [ "$round" -le 18 ]; then
+                delay=20
+              else
+                delay=30
+              fi
+              sleep "$delay"
+            fi
+          done
+
+          for name in "${stale_names[@]}"; do
+            expected_hash="$(sha256sum "cfg/$name" | awk '{print $1}')"
+            if [ -s "$temp_dir/main-$name" ]; then
+              actual_hash="$(sha256sum "$temp_dir/main-$name" | awk '{print $1}')"
+            else
+              actual_hash=unavailable
+            fi
+            printf 'jsDelivr @main mismatch: %s expected=%s actual=%s\n' \
+              "$name" "$expected_hash" "$actual_hash" >&2
+          done
+          exit 1
 
       - name: Record exact generated commit status
         env:
