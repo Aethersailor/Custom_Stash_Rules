@@ -1,6 +1,8 @@
 # Stash 订阅转换模板
 
-本目录中的文件由 `Custom_OpenClash_Rules` 自动生成。模板只用于支持 `target=stash` 的订阅转换后端，不要直接导入 Stash，也不要手工修改。
+本目录保存以 COCR 为基准、经过 Stash 兼容处理的订阅转换模板。项目已停止维护，不再自动生成或同步这些文件。模板只用于支持 `target=stash` 的订阅转换后端，不能直接导入 Stash。
+
+全部 GeoSite 和 GEOIP 使用显式远程规则文件；规则链接统一通过 `cdn.jsdelivr.net` 获取。纯域名和 IP 使用 MRS，含关键词或正则的分类保留 Classical YAML。Fallback 版本保留其自动故障转移语义。
 
 | 版本 | 模板 | 定位 |
 | --- | --- | --- |
@@ -17,7 +19,7 @@
 调用示例：
 
 ```text
-https://test-api.asailor.org/sub?target=stash&url=<URL 编码后的订阅地址>&config=https%3A%2F%2Fraw.githubusercontent.com%2FAethersailor%2FCustom_Stash_Rules%2Fmain%2Fcfg%2FCustom_Stash.ini
+https://<支持 target=stash 的后端>/sub?target=stash&url=<URL 编码后的订阅地址>&config=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2FAethersailor%2FCustom_Stash_Rules%40main%2Fcfg%2FCustom_Stash.ini
 ```
 
-`test-api.asailor.org` 用于开发版本和模板的端到端验证，不提供生产可用性承诺。使用其他后端前，请确认该后端明确支持 `target=stash`。
+后端需要支持 Stash 的 MRS、Classical Rule Provider 和对应的 `no-resolve` 选项。现有订阅需要重新转换并在 Stash 中更新配置；兼容处理边界见仓库首页。
