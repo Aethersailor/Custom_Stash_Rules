@@ -16,10 +16,10 @@ https://<支持 target=stash 的后端>/sub?target=stash&url=<URL 编码后的�
 标准版模板地址：
 
 ```text
-https://cdn.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@main/cfg/Custom_Stash.ini
+https://cdn.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@eef194e57e1505a6c2635000f8f7e00d4ecf5d82/cfg/Custom_Stash.ini
 ```
 
-完整模板列表见 [`cfg/README.md`](cfg/README.md)。
+完整模板列表见 [`cfg/README.md`](cfg/README.md)。模板下载链接固定到本次已核对的配置提交，避免分支 CDN 缓存返回旧模板；模板中的规则资源仍按各自的更新间隔从上游获取。
 
 ## 基准与兼容处理
 
