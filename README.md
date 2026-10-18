@@ -25,7 +25,7 @@ https://cdn.jsdelivr.net/gh/Aethersailor/Custom_Stash_Rules@main/cfg/Custom_Stas
 
 `SOURCE_REVISION` 记录最后一次校正采用的 COCR 提交。全部 9 个模板保留对应 COCR 版本的规则优先级、策略组类型和候选顺序；`Custom_Stash_Mainland.ini` 与标准版内容相同。项目不再自动生成或跨仓库同步模板。
 
-- GeoSite 和 GEOIP 均替换为 MetaCubeX 的显式远程规则文件，避免依赖 Stash 内置数据源中不存在的分类。已移除 COCR 不再使用的 `google-cn`，国内游戏使用 `category-games-cn`。
+- GeoSite 和 GEOIP 均替换为 MetaCubeX 的显式远程规则文件，避免依赖 Stash 内置数据源中不存在的分类。已移除 COCR 不再使用的 `google-cn`，国内游戏使用 `category-games@cn` 属性筛选。
 - 纯域名和 IP 集合使用 Stash 支持的 MRS 格式；含 `DOMAIN-KEYWORD` 或 `DOMAIN-REGEX` 的 GeoSite 分类使用 Classical YAML，保留完整匹配语义。
 - 保留 COCR 自定义规则来源中的域名关键词和目标端口规则。`SRC-PORT,41641` 未输出，避免依赖仅较新 Beta 版本才支持的源端口规则。
 - 保留 Fallback 策略和原有直连候选。策略组采用当前转换器可输出的 `interval`；不照搬 Clash 的组级测速 URL、超时和容差参数，复杂节点筛选沿用可移植表达式或已有自动组。
