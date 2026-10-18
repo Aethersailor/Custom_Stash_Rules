@@ -1,5 +1,8 @@
 # Custom_Stash_Rules
 
+> [!IMPORTANT]
+> 由于维护者已不再使用 Stash 作为主力客户端，本项目已停止维护并归档，不再更新或同步 Stash 模板。以下文档和模板仅作历史参考。
+
 本仓库保存面向 Stash 的订阅转换模板。模板由
 [`Aethersailor/Custom_OpenClash_Rules`](https://github.com/Aethersailor/Custom_OpenClash_Rules)
 中的 `py/generate_stash_configs.py` 自动生成，不在本仓库中手工维护。
